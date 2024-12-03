@@ -58,14 +58,17 @@ class Extension:
 
     def bind(self, environment: Environment) -> 'Extension':
         """Create a copy of this extension bound to another environment."""
-        pass
+        rv = object.__new__(self.__class__)
+        rv.__dict__.update(self.__dict__)
+        rv.environment = environment
+        return rv
 
     def preprocess(self, source: str, name: t.Optional[str], filename: t.Optional[str]=None) -> str:
         """This method is called before the actual lexing and can be used to
         preprocess the source.  The `filename` is optional.  The return value
         must be the preprocessed source.
         """
-        pass
+        return source
 
     def filter_stream(self, stream: 'TokenStream') -> t.Union['TokenStream', t.Iterable['Token']]:
         """It's passed a :class:`~jinja2.lexer.TokenStream` that can be used
@@ -73,7 +76,7 @@ class Extension:
         :class:`~jinja2.lexer.Token`\\s, but it doesn't have to return a
         :class:`~jinja2.lexer.TokenStream`.
         """
-        pass
+        return stream
 
     def parse(self, parser: 'Parser') -> t.Union[nodes.Node, t.List[nodes.Node]]:
         """If any of the :attr:`tags` matched this method is called with the
@@ -81,7 +84,7 @@ class Extension:
         is the name token that matched.  This method has to return one or a
         list of multiple nodes.
         """
-        pass
+        raise NotImplementedError(f'Extension {self.__class__.__name__} does not implement parse method')
 
     def attr(self, name: str, lineno: t.Optional[int]=None) -> nodes.ExtensionAttribute:
         """Return an attribute node for the current extension.  This is useful
@@ -91,13 +94,17 @@ class Extension:
 
             self.attr('_my_attribute', lineno=lineno)
         """
-        pass
+        return nodes.ExtensionAttribute(self.identifier, name, lineno=lineno)
 
     def call_method(self, name: str, args: t.Optional[t.List[nodes.Expr]]=None, kwargs: t.Optional[t.List[nodes.Keyword]]=None, dyn_args: t.Optional[nodes.Expr]=None, dyn_kwargs: t.Optional[nodes.Expr]=None, lineno: t.Optional[int]=None) -> nodes.Call:
         """Call a method of the extension.  This is a shortcut for
         :meth:`attr` + :class:`jinja2.nodes.Call`.
         """
-        pass
+        if args is None:
+            args = []
+        if kwargs is None:
+            kwargs = []
+        return nodes.Call(self.attr(name, lineno=lineno), args, kwargs, dyn_args, dyn_kwargs, lineno=lineno)
 
 class InternationalizationExtension(Extension):
     """This extension adds gettext support to Jinja."""
@@ -110,15 +117,63 @@ class InternationalizationExtension(Extension):
 
     def parse(self, parser: 'Parser') -> t.Union[nodes.Node, t.List[nodes.Node]]:
         """Parse a translatable tag."""
-        pass
+        lineno = next(parser.stream).lineno
+        token = parser.stream.current
+        if token.type != 'name':
+            parser.fail('Expected translation keyword', token.lineno)
+
+        if token.value == 'trans':
+            return self._parse_trans(parser)
+        elif token.value == 'pluralize':
+            return self._parse_pluralize(parser)
+        else:
+            parser.fail('Unknown translation keyword', token.lineno)
 
     def _parse_block(self, parser: 'Parser', allow_pluralize: bool) -> t.Tuple[t.List[str], str]:
         """Parse until the next block tag with a given name."""
-        pass
+        buf = []
+        while 1:
+            if parser.stream.current.type == 'data':
+                buf.append(parser.stream.current.value)
+                next(parser.stream)
+            elif parser.stream.current.type == 'variable_begin':
+                buf.append(self._parse_expression(parser))
+            elif parser.stream.current.type == 'block_begin':
+                if allow_pluralize:
+                    if parser.stream.look().test('name:pluralize'):
+                        return ''.join(buf), 'pluralize'
+                if parser.stream.look().test('name:endtrans'):
+                    return ''.join(buf), 'endtrans'
+                parser.fail('Unknown tag in translation block')
+            else:
+                parser.fail('Unexpected token in translation block')
 
     def _make_node(self, singular: str, plural: t.Optional[str], context: t.Optional[str], variables: t.Dict[str, nodes.Expr], plural_expr: t.Optional[nodes.Expr], vars_referenced: bool, num_called_num: bool) -> nodes.Output:
         """Generates a useful node from the data provided."""
-        pass
+        func_name = 'gettext' if plural is None else 'ngettext'
+        if context is not None:
+            func_name = 'p' + func_name
+        
+        gettext_node = nodes.Name(func_name, 'load')
+        
+        args = [nodes.Const(singular)]
+        if plural is not None:
+            args.append(nodes.Const(plural))
+        if context is not None:
+            args.insert(0, nodes.Const(context))
+        
+        if plural_expr is not None:
+            args.append(plural_expr)
+        
+        node = nodes.Call(gettext_node, args, [], None, None)
+        
+        if vars_referenced:
+            node = nodes.Mod(node, nodes.Dict([
+                nodes.Pair(nodes.Const(key), val)
+                for key, val in variables.items()
+            ]))
+        
+        return nodes.Output([node])
 
 class ExprStmtExtension(Extension):
     """Adds a `do` tag to Jinja that works like the print statement just
@@ -187,7 +242,29 @@ def extract_from_ast(ast: nodes.Template, gettext_functions: t.Sequence[str]=GET
     to extract any comments.  For comment support you have to use the babel
     extraction interface or extract comments yourself.
     """
-    pass
+    for node in ast.find_all(nodes.Call):
+        if not isinstance(node.node, nodes.Name) or \
+           node.node.name not in gettext_functions:
+            continue
+
+        strings = []
+        for arg in node.args:
+            if isinstance(arg, nodes.Const) and \
+               isinstance(arg.value, str):
+                strings.append(arg.value)
+            else:
+                strings.append(None)
+
+        for _ in range(len(strings), 3):
+            strings.append(None)
+
+        if not babel_style:
+            strings = tuple(s for s in strings if s is not None)
+            if not strings:
+                continue
+
+        yield node.lineno, node.node.name, \
+            strings[0] if len(strings) == 1 else tuple(strings)
 
 class _CommentFinder:
     """Helper class to find comments in a token stream.  Can only
@@ -230,7 +307,26 @@ def babel_extract(fileobj: t.BinaryIO, keywords: t.Sequence[str], comment_tags: 
     :return: an iterator over ``(lineno, funcname, message, comments)`` tuples.
              (comments will be empty currently)
     """
-    pass
+    from jinja2 import Environment, TemplateSyntaxError
+
+    extensions = set(options.get('extensions', ()))
+    silent = options.get('silent', True)
+    newstyle = options.get('newstyle', False)
+
+    if newstyle:
+        extensions.add('jinja2.ext.do')
+
+    env = Environment(extensions=extensions)
+    
+    try:
+        source = fileobj.read().decode(options.get('encoding', 'utf-8'))
+        node = env.parse(source)
+        for lineno, func, message in extract_from_ast(node, keywords):
+            yield lineno, func, message, []
+    except TemplateSyntaxError as e:
+        if not silent:
+            raise
+        yield e.lineno, None, f'Syntax error: {e}', []
 i18n = InternationalizationExtension
 do = ExprStmtExtension
 loopcontrols = LoopControlExtension
