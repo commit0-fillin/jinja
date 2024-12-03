@@ -27,17 +27,33 @@ operators = {'eq': '==', 'ne': '!=', 'gt': '>', 'gteq': '>=', 'lt': '<', 'lteq':
 
 def generate(node: nodes.Template, environment: 'Environment', name: t.Optional[str], filename: t.Optional[str], stream: t.Optional[t.TextIO]=None, defer_init: bool=False, optimized: bool=True) -> t.Optional[str]:
     """Generate the python source for a node tree."""
-    pass
+    codegen = CodeGenerator(environment, name, filename, stream, defer_init, optimized)
+    codegen.visit(node)
+    if stream is None:
+        return codegen.stream.getvalue()
+    return None
 
 def has_safe_repr(value: t.Any) -> bool:
     """Does the node have a safe representation?"""
-    pass
+    if isinstance(value, (bool, int, float, complex, range, str, bytes)):
+        return True
+    if isinstance(value, (tuple, list, set, frozenset)):
+        return all(has_safe_repr(item) for item in value)
+    if isinstance(value, dict):
+        return all(has_safe_repr(key) and has_safe_repr(val) for key, val in value.items())
+    return False
 
 def find_undeclared(nodes: t.Iterable[nodes.Node], names: t.Iterable[str]) -> t.Set[str]:
     """Check if the names passed are accessed undeclared.  The return value
     is a set of all the undeclared names from the sequence of names found.
     """
-    pass
+    visitor = UndeclaredNameVisitor(names)
+    try:
+        for node in nodes:
+            visitor.visit(node)
+    except VisitorExit:
+        pass
+    return visitor.undeclared
 
 class MacroRef:
 
@@ -71,11 +87,16 @@ class Frame:
 
     def copy(self) -> 'Frame':
         """Create a copy of the current one."""
-        pass
+        rv = object.__new__(self.__class__)
+        rv.__dict__.update(self.__dict__)
+        rv.symbols = self.symbols.copy()
+        return rv
 
     def inner(self, isolated: bool=False) -> 'Frame':
         """Return an inner frame."""
-        pass
+        if isolated:
+            return Frame(self.eval_ctx, level=self.symbols.level)
+        return Frame(self.eval_ctx, self)
 
     def soft(self) -> 'Frame':
         """Return a soft frame.  A soft frame may not be modified as
@@ -85,7 +106,11 @@ class Frame:
         This is only used to implement if-statements and conditional
         expressions.
         """
-        pass
+        rv = object.__new__(self.__class__)
+        rv.__dict__.update(self.__dict__)
+        rv.rootlevel = False
+        rv.soft_frame = True
+        return rv
     __copy__ = copy
 
 class VisitorExit(RuntimeError):
@@ -100,7 +125,7 @@ class DependencyFinderVisitor(NodeVisitor):
 
     def visit_Block(self, node: nodes.Block) -> None:
         """Stop visiting at blocks."""
-        pass
+        return
 
 class UndeclaredNameVisitor(NodeVisitor):
     """A visitor that checks if a name is accessed without being
@@ -114,7 +139,7 @@ class UndeclaredNameVisitor(NodeVisitor):
 
     def visit_Block(self, node: nodes.Block) -> None:
         """Stop visiting a blocks."""
-        pass
+        return
 
 class CompilerExit(Exception):
     """Raised if the compiler encountered a situation where it just
