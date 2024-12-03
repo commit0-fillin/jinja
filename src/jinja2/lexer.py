@@ -78,21 +78,36 @@ ignore_if_empty = frozenset([TOKEN_WHITESPACE, TOKEN_DATA, TOKEN_COMMENT, TOKEN_
 
 def describe_token(token: 'Token') -> str:
     """Returns a description of the token."""
-    pass
+    if token.type == 'name':
+        return token.value
+    return f'{token.type}({token.value!r})'
 
 def describe_token_expr(expr: str) -> str:
     """Like `describe_token` but for token expressions."""
-    pass
+    if ':' not in expr:
+        return expr
+    type, value = expr.split(':', 1)
+    if type == 'name':
+        return value
+    return f'{type}({value!r})'
 
 def count_newlines(value: str) -> int:
     """Count the number of newline characters in the string.  This is
     useful for extensions that filter a stream.
     """
-    pass
+    return value.count('\n')
 
 def compile_rules(environment: 'Environment') -> t.List[t.Tuple[str, str]]:
     """Compiles all the rules from the environment into a list of rules."""
-    pass
+    e = re.escape
+    rules = [
+        ('comment', e(environment.comment_start_string)),
+        ('block', e(environment.block_start_string)),
+        ('variable', e(environment.variable_start_string)),
+        ('linestatement', e(environment.line_statement_prefix or '')),
+        ('linecomment', e(environment.line_comment_prefix or '')),
+    ]
+    return [(k, v) for k, v in rules if v]
 
 class Failure:
     """Class that raises a `TemplateSyntaxError` if called.
@@ -119,11 +134,14 @@ class Token(t.NamedTuple):
         token type or ``'token_type:token_value'``.  This can only test
         against string values and types.
         """
-        pass
+        if ':' in expr:
+            type, value = expr.split(':', 1)
+            return self.type == type and self.value == value
+        return self.type == expr
 
     def test_any(self, *iterable: str) -> bool:
         """Test against multiple token expressions."""
-        pass
+        return any(self.test(expr) for expr in iterable)
 
 class TokenStreamIterator:
     """The iterator for tokenstreams.  Iterate over the stream
@@ -168,29 +186,35 @@ class TokenStream:
     @property
     def eos(self) -> bool:
         """Are we at the end of the stream?"""
-        pass
+        return self.current.type is TOKEN_EOF
 
     def push(self, token: Token) -> None:
         """Push a token back to the stream."""
-        pass
+        self._pushed.appendleft(token)
 
     def look(self) -> Token:
         """Look at the next token."""
-        pass
+        old_token = next(self)
+        result = self.current
+        self.push(old_token)
+        return result
 
     def skip(self, n: int=1) -> None:
         """Got n tokens ahead."""
-        pass
+        for _ in range(n):
+            next(self)
 
     def next_if(self, expr: str) -> t.Optional[Token]:
         """Perform the token test and return the token if it matched.
         Otherwise the return value is `None`.
         """
-        pass
+        if self.current.test(expr):
+            return next(self)
+        return None
 
     def skip_if(self, expr: str) -> bool:
         """Like :meth:`next_if` but only returns `True` or `False`."""
-        pass
+        return self.next_if(expr) is not None
 
     def __next__(self) -> Token:
         """Go one token ahead and return the old one.
@@ -209,17 +233,47 @@ class TokenStream:
 
     def close(self) -> None:
         """Close the stream."""
-        pass
+        self.closed = True
+        self._iter = None
+        self._pushed.clear()
+        self.current = Token(self.current.lineno, TOKEN_EOF, '')
 
     def expect(self, expr: str) -> Token:
         """Expect a given token type and return it.  This accepts the same
         argument as :meth:`jinja2.lexer.Token.test`.
         """
-        pass
+        if not self.current.test(expr):
+            if ':' in expr:
+                expr = f'{expr.split(":", 1)[0]} token'
+            raise TemplateSyntaxError(
+                f'expected {expr}', self.current.lineno,
+                self.name, self.filename
+            )
+        try:
+            return next(self)
+        except StopIteration:
+            return self.current
 
 def get_lexer(environment: 'Environment') -> 'Lexer':
     """Return a lexer which is probably cached."""
-    pass
+    key = (environment.block_start_string,
+           environment.block_end_string,
+           environment.variable_start_string,
+           environment.variable_end_string,
+           environment.comment_start_string,
+           environment.comment_end_string,
+           environment.line_statement_prefix,
+           environment.line_comment_prefix,
+           environment.trim_blocks,
+           environment.lstrip_blocks,
+           environment.newline_sequence,
+           environment.keep_trailing_newline)
+
+    lexer = _lexer_cache.get(key)
+    if lexer is None:
+        lexer = Lexer(environment)
+        _lexer_cache[key] = lexer
+    return lexer
 
 class OptionalLStrip(tuple):
     """A special tuple for marking a point in the state that can have
@@ -266,17 +320,23 @@ class Lexer:
         """Replace all newlines with the configured sequence in strings
         and template data.
         """
-        pass
+        return re.sub(r'\r\n|\r|\n', self.newline_sequence, value)
 
     def tokenize(self, source: str, name: t.Optional[str]=None, filename: t.Optional[str]=None, state: t.Optional[str]=None) -> TokenStream:
         """Calls tokeniter + tokenize and wraps it in a token stream."""
-        pass
+        stream = self.tokeniter(source, name, filename, state)
+        return TokenStream(self.wrap(stream, name, filename), name, filename)
 
     def wrap(self, stream: t.Iterable[t.Tuple[int, str, str]], name: t.Optional[str]=None, filename: t.Optional[str]=None) -> t.Iterator[Token]:
         """This is called with the stream as returned by `tokenize` and wraps
         every token in a :class:`Token` and converts the value.
         """
-        pass
+        for lineno, token, value in stream:
+            if token in ('linestatement_begin', 'linestatement_end'):
+                token = 'block'
+            elif token == 'data':
+                value = self._normalize_newlines(value)
+            yield Token(lineno, token, value)
 
     def tokeniter(self, source: str, name: t.Optional[str], filename: t.Optional[str]=None, state: t.Optional[str]=None) -> t.Iterator[t.Tuple[int, str, str]]:
         """This method tokenizes the text and returns the tokens in a
@@ -286,4 +346,44 @@ class Lexer:
             Only ``\\n``, ``\\r\\n`` and ``\\r`` are treated as line
             breaks.
         """
-        pass
+        source = t.cast(str, source)
+        lines = source.splitlines(True)
+        if self.keep_trailing_newline and lines and not lines[-1].endswith('\n'):
+            lines[-1] += '\n'
+        source = ''.join(lines)
+
+        pos = 0
+        lineno = 1
+        stack = ['root']
+        if state is not None and state != 'root':
+            stack.append(state)
+
+        statetokens = self.rules[stack[-1]]
+        source_length = len(source)
+
+        while 1:
+            # tokenizer loop
+            for rule in statetokens:
+                m = rule.pattern.match(source, pos)
+                if m is not None:
+                    value = m.group()
+                    if value in ('', None):
+                        value = ''
+                    yield lineno, rule.tokens[0], value
+                    pos = m.end()
+                    if rule.command is not None:
+                        cmd = rule.command
+                        if cmd == '#pop':
+                            stack.pop()
+                        elif cmd == '#push':
+                            stack.append(stack[-1])
+                        else:
+                            stack.append(cmd)
+                        statetokens = self.rules[stack[-1]]
+                    lineno += value.count('\n')
+                    break
+            else:
+                if pos >= source_length:
+                    return
+                raise TemplateSyntaxError('Unexpected char %r at %d' %
+                                          (source[pos], pos), lineno, name, filename)
