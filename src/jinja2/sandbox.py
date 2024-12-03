@@ -27,7 +27,22 @@ def safe_range(*args: int) -> range:
     """A range that can't generate ranges with a length of more than
     MAX_RANGE items.
     """
-    pass
+    if len(args) == 1:
+        start, stop, step = 0, args[0], 1
+    elif len(args) == 2:
+        start, stop, step = args[0], args[1], 1
+    elif len(args) == 3:
+        start, stop, step = args
+    else:
+        raise TypeError('range() requires 1-3 integer arguments')
+    
+    # Calculate the length of the range
+    length = (stop - start + (step - 1)) // step
+    
+    if length > MAX_RANGE:
+        raise OverflowError(f'range() result has too many items (maximum is {MAX_RANGE})')
+    
+    return range(start, stop, step)
 
 def unsafe(f: F) -> F:
     """Marks a function or method as unsafe.
@@ -38,7 +53,8 @@ def unsafe(f: F) -> F:
         def delete(self):
             pass
     """
-    pass
+    f.unsafe_callable = True
+    return f
 
 def is_internal_attribute(obj: t.Any, attr: str) -> bool:
     """Test if the attribute given is an internal python attribute.  For
@@ -52,7 +68,10 @@ def is_internal_attribute(obj: t.Any, attr: str) -> bool:
     >>> is_internal_attribute(str, "upper")
     False
     """
-    pass
+    return attr.startswith('_') or \
+           attr.startswith('func_') or \
+           attr.startswith('im_') or \
+           attr in ('__globals__', '__code__', '__closure__', '__name__', '__defaults__', '__kwdefaults__')
 
 def modifies_known_mutable(obj: t.Any, attr: str) -> bool:
     """This function checks if an attribute on a builtin mutable object
@@ -73,7 +92,10 @@ def modifies_known_mutable(obj: t.Any, attr: str) -> bool:
     >>> modifies_known_mutable("foo", "upper")
     False
     """
-    pass
+    for typespec, unsafe in _mutable_spec:
+        if isinstance(obj, typespec):
+            return attr in unsafe
+    return False
 
 class SandboxedEnvironment(Environment):
     """The sandboxed environment.  It works like the regular environment but
@@ -104,7 +126,8 @@ class SandboxedEnvironment(Environment):
         special attributes of internal python objects as returned by the
         :func:`is_internal_attribute` function.
         """
-        pass
+        return not (attr.startswith('_') or is_internal_attribute(obj, attr) or
+                    modifies_known_mutable(obj, attr))
 
     def is_safe_callable(self, obj: t.Any) -> bool:
         """Check if an object is safely callable. By default callables
@@ -113,7 +136,8 @@ class SandboxedEnvironment(Environment):
         This also recognizes the Django convention of setting
         ``func.alters_data = True``.
         """
-        pass
+        return not (getattr(obj, 'unsafe_callable', False) or
+                    getattr(obj, 'alters_data', False))
 
     def call_binop(self, context: Context, operator: str, left: t.Any, right: t.Any) -> t.Any:
         """For intercepted binary operator calls (:meth:`intercepted_binops`)
@@ -122,7 +146,7 @@ class SandboxedEnvironment(Environment):
 
         .. versionadded:: 2.6
         """
-        pass
+        return self.binop_table[operator](left, right)
 
     def call_unop(self, context: Context, operator: str, arg: t.Any) -> t.Any:
         """For intercepted unary operator calls (:meth:`intercepted_unops`)
@@ -131,31 +155,57 @@ class SandboxedEnvironment(Environment):
 
         .. versionadded:: 2.6
         """
-        pass
+        return self.unop_table[operator](arg)
 
     def getitem(self, obj: t.Any, argument: t.Union[str, t.Any]) -> t.Union[t.Any, Undefined]:
         """Subscribe an object from sandboxed code."""
-        pass
+        try:
+            return obj[argument]
+        except (TypeError, LookupError):
+            if isinstance(argument, str):
+                try:
+                    return getattr(obj, str(argument))
+                except AttributeError:
+                    pass
+            return self.undefined(obj=obj, name=argument)
 
     def getattr(self, obj: t.Any, attribute: str) -> t.Union[t.Any, Undefined]:
         """Subscribe an object from sandboxed code and prefer the
         attribute.  The attribute passed *must* be a bytestring.
         """
-        pass
+        try:
+            value = getattr(obj, attribute)
+        except AttributeError:
+            try:
+                return obj[attribute]
+            except (TypeError, LookupError):
+                pass
+            return self.undefined(obj=obj, name=attribute)
+        else:
+            if self.is_safe_attribute(obj, attribute, value):
+                return value
+            return self.unsafe_undefined(obj, attribute)
 
     def unsafe_undefined(self, obj: t.Any, attribute: str) -> Undefined:
         """Return an undefined object for unsafe attributes."""
-        pass
+        return self.undefined(obj=obj, name=attribute, exc=SecurityError)
 
     def format_string(self, s: str, args: t.Tuple[t.Any, ...], kwargs: t.Dict[str, t.Any], format_func: t.Optional[t.Callable[..., t.Any]]=None) -> str:
         """If a format call is detected, then this is routed through this
         method so that our safety sandbox can be used for it.
         """
-        pass
+        if isinstance(s, Markup):
+            formatter = SandboxedEscapeFormatter(self, format_func)
+        else:
+            formatter = SandboxedFormatter(self, format_func)
+        
+        return formatter.vformat(s, args, kwargs)
 
     def call(__self, __context: Context, __obj: t.Any, *args: t.Any, **kwargs: t.Any) -> t.Any:
         """Call an object from sandboxed code."""
-        pass
+        if not __self.is_safe_callable(__obj):
+            raise SecurityError(f'{__obj!r} is not safely callable')
+        return __context.call(__obj, *args, **kwargs)
 
 class ImmutableSandboxedEnvironment(SandboxedEnvironment):
     """Works exactly like the regular `SandboxedEnvironment` but does not
