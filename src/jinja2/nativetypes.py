@@ -20,7 +20,20 @@ def native_concat(values: t.Iterable[t.Any]) -> t.Optional[t.Any]:
 
     :param values: Iterable of outputs to concatenate.
     """
-    pass
+    head = next(iter(values), None)
+
+    if head is None:
+        return None
+    elif next(iter(values), None) is None:
+        return head
+    else:
+        buf = []
+        for value in values:
+            if isinstance(value, str):
+                buf.append(value)
+            else:
+                buf.append(str(value))
+        return ''.join(buf)
 
 class NativeCodeGenerator(CodeGenerator):
     """A code generator which renders Python types by not adding
@@ -42,5 +55,11 @@ class NativeTemplate(Template):
         with :func:`ast.literal_eval`, the parsed value is returned.
         Otherwise, the string is returned.
         """
-        pass
+        vars = dict(*args, **kwargs)
+        try:
+            result = self.root_render_func(self.new_context(vars))
+            return native_concat(result)
+        except Exception:
+            exc_info = sys.exc_info()
+            return self.environment.handle_exception(exc_info, True)
 NativeEnvironment.template_class = NativeTemplate
