@@ -33,7 +33,7 @@ if t.TYPE_CHECKING:
     class HasHTML(te.Protocol):
 
         def __html__(self) -> str:
-            pass
+            return str(self)
 F = t.TypeVar('F', bound=t.Callable[..., t.Any])
 K = t.TypeVar('K')
 V = t.TypeVar('V')
@@ -41,7 +41,9 @@ V = t.TypeVar('V')
 def ignore_case(value: V) -> V:
     """For use as a postprocessor for :func:`make_attrgetter`. Converts strings
     to lowercase and returns other types as-is."""
-    pass
+    if isinstance(value, str):
+        return value.lower()
+    return value
 
 def make_attrgetter(environment: 'Environment', attribute: t.Optional[t.Union[str, int]], postprocess: t.Optional[t.Callable[[t.Any], t.Any]]=None, default: t.Optional[t.Any]=None) -> t.Callable[[t.Any], t.Any]:
     """Returns a callable that looks up the given attribute from a
@@ -49,7 +51,21 @@ def make_attrgetter(environment: 'Environment', attribute: t.Optional[t.Union[st
     to access attributes of attributes.  Integer parts in paths are
     looked up as integers.
     """
-    pass
+    if attribute is None:
+        return lambda x: default
+    if isinstance(attribute, int):
+        return lambda x: environment.getitem(x, attribute)
+    
+    def func(item):
+        for part in attribute.split('.'):
+            if part.isdigit():
+                item = environment.getitem(item, int(part))
+            else:
+                item = environment.getattr(item, part)
+        if postprocess is not None:
+            item = postprocess(item)
+        return item
+    return func
 
 def make_multi_attrgetter(environment: 'Environment', attribute: t.Optional[t.Union[str, int]], postprocess: t.Optional[t.Callable[[t.Any], t.Any]]=None) -> t.Callable[[t.Any], t.List[t.Any]]:
     """Returns a callable that looks up the given comma separated
@@ -62,11 +78,21 @@ def make_multi_attrgetter(environment: 'Environment', attribute: t.Optional[t.Un
 
     Examples of attribute: "attr1,attr2", "attr1.inner1.0,attr2.inner2.0", etc.
     """
-    pass
+    if attribute is None:
+        return lambda x: []
+    
+    getters = [make_attrgetter(environment, attr.strip(), postprocess)
+               for attr in attribute.split(',')]
+    
+    def func(item):
+        return [getter(item) for getter in getters]
+    return func
 
 def do_forceescape(value: 't.Union[str, HasHTML]') -> Markup:
     """Enforce HTML escaping.  This will probably double escape variables."""
-    pass
+    if hasattr(value, '__html__'):
+        value = value.__html__()
+    return Markup(escape(str(value)))
 
 def do_urlencode(value: t.Union[str, t.Mapping[str, t.Any], t.Iterable[t.Tuple[str, t.Any]]]) -> str:
     """Quote data for use in a URL path or query using UTF-8.
@@ -84,7 +110,17 @@ def do_urlencode(value: t.Union[str, t.Mapping[str, t.Any], t.Iterable[t.Tuple[s
 
     .. versionadded:: 2.7
     """
-    pass
+    from urllib.parse import quote, urlencode
+
+    if isinstance(value, str):
+        return quote(value, safe="/")
+    elif isinstance(value, Mapping):
+        return urlencode(value)
+    else:
+        try:
+            return urlencode(list(value))
+        except Exception:
+            raise TypeError("Unable to encode value for urlencode")
 
 @pass_eval_context
 def do_replace(eval_ctx: 'EvalContext', s: str, old: str, new: str, count: t.Optional[int]=None) -> str:
