@@ -40,21 +40,26 @@ class FrameSymbolVisitor(NodeVisitor):
 
     def visit_Name(self, node: nodes.Name, store_as_param: bool=False, **kwargs: t.Any) -> None:
         """All assignments to names go through this function."""
-        pass
+        if node.ctx == 'store' or store_as_param:
+            self.symbols.stores.add(node.name)
+        elif node.ctx == 'load':
+            self.symbols.loads[node.name] = VAR_LOAD_RESOLVE
 
     def visit_Assign(self, node: nodes.Assign, **kwargs: t.Any) -> None:
         """Visit assignments in the correct order."""
-        pass
+        self.visit(node.node)
+        self.visit(node.target)
 
     def visit_For(self, node: nodes.For, **kwargs: t.Any) -> None:
         """Visiting stops at for blocks.  However the block sequence
         is visited as part of the outer scope.
         """
-        pass
+        self.visit(node.iter)
+        self.visit(node.target)
 
     def visit_AssignBlock(self, node: nodes.AssignBlock, **kwargs: t.Any) -> None:
         """Stop visiting at block assigns."""
-        pass
+        self.visit(node.target)
 
     def visit_Scope(self, node: nodes.Scope, **kwargs: t.Any) -> None:
         """Stop visiting at scopes."""
