@@ -92,26 +92,43 @@ class Node(metaclass=NodeType):
         parameter or to exclude some using the `exclude` parameter.  Both
         should be sets or tuples of field names.
         """
-        pass
+        for name in self.fields:
+            if (only is None or name in only) and (exclude is None or name not in exclude):
+                yield name, getattr(self, name)
 
     def iter_child_nodes(self, exclude: t.Optional[t.Container[str]]=None, only: t.Optional[t.Container[str]]=None) -> t.Iterator['Node']:
         """Iterates over all direct child nodes of the node.  This iterates
         over all fields and yields the values of they are nodes.  If the value
         of a field is a list all the nodes in that list are returned.
         """
-        pass
+        for field, item in self.iter_fields(exclude, only):
+            if isinstance(item, Node):
+                yield item
+            elif isinstance(item, list):
+                for n in item:
+                    if isinstance(n, Node):
+                        yield n
 
     def find(self, node_type: t.Type[_NodeBound]) -> t.Optional[_NodeBound]:
         """Find the first node of a given type.  If no such node exists the
         return value is `None`.
         """
-        pass
+        for child in self.iter_child_nodes():
+            if isinstance(child, node_type):
+                return child
+            result = child.find(node_type)
+            if result is not None:
+                return result
+        return None
 
     def find_all(self, node_type: t.Union[t.Type[_NodeBound], t.Tuple[t.Type[_NodeBound], ...]]) -> t.Iterator[_NodeBound]:
         """Find all the nodes of a given type.  If the type is a tuple,
         the check is performed for any of the tuple items.
         """
-        pass
+        for child in self.iter_child_nodes():
+            if isinstance(child, node_type):
+                yield child
+            yield from child.find_all(node_type)
 
     def set_ctx(self, ctx: str) -> 'Node':
         """Reset the context of a node and all child nodes.  Per default the
@@ -119,15 +136,27 @@ class Node(metaclass=NodeType):
         most common one.  This method is used in the parser to set assignment
         targets and other nodes to a store context.
         """
-        pass
+        if 'ctx' in self.attributes:
+            self.ctx = ctx
+        for child in self.iter_child_nodes():
+            child.set_ctx(ctx)
+        return self
 
     def set_lineno(self, lineno: int, override: bool=False) -> 'Node':
         """Set the line numbers of the node and children."""
-        pass
+        if 'lineno' in self.attributes:
+            if self.lineno is None or override:
+                self.lineno = lineno
+        for child in self.iter_child_nodes():
+            child.set_lineno(lineno, override)
+        return self
 
     def set_environment(self, environment: 'Environment') -> 'Node':
         """Set the environment for all nodes."""
-        pass
+        self.environment = environment
+        for child in self.iter_child_nodes():
+            child.set_environment(environment)
+        return self
 
     def __eq__(self, other: t.Any) -> bool:
         if type(self) is not type(other):
@@ -136,7 +165,7 @@ class Node(metaclass=NodeType):
     __hash__ = object.__hash__
 
     def __repr__(self) -> str:
-        args_str = ', '.join((f'{a}={getattr(self, a, None)!r}' for a in self.fields))
+        args_str = ', '.join(f'{a}={getattr(self, a, None)!r}' for a in self.fields)
         return f'{type(self).__name__}({args_str})'
 
 class Stmt(Node):
@@ -303,11 +332,11 @@ class Expr(Node):
         .. versionchanged:: 2.4
            the `eval_ctx` parameter was added.
         """
-        pass
+        raise Impossible()
 
     def can_assign(self) -> bool:
         """Check if it's possible to assign something to this node."""
-        pass
+        return False
 
 class BinExpr(Expr):
     """Baseclass for all binary expressions."""
@@ -361,7 +390,29 @@ class Const(Literal):
         constant value in the generated code, otherwise it will raise
         an `Impossible` exception.
         """
-        pass
+        if isinstance(value, (bool, int, float, str)):
+            return cls(value, lineno=lineno)
+        if isinstance(value, (tuple, list)):
+            items = []
+            for item in value:
+                try:
+                    items.append(cls.from_untrusted(item, lineno=lineno,
+                                                    environment=environment))
+                except Impossible:
+                    raise Impossible(f'Constant {value!r} includes non-constant '
+                                     f'value {item!r}')
+            return cls(tuple(items), lineno=lineno)
+        if isinstance(value, dict):
+            items = {}
+            for key, value in value.items():
+                try:
+                    items[str(key)] = cls.from_untrusted(value, lineno=lineno,
+                                                         environment=environment)
+                except Impossible:
+                    raise Impossible(f'Constant {value!r} includes non-constant '
+                                     f'value {value!r}')
+            return cls(items, lineno=lineno)
+        raise Impossible(f'Cannot convert {value!r} to const')
 
 class TemplateData(Literal):
     """A constant template string."""
