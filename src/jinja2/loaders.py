@@ -22,7 +22,13 @@ def split_template_path(template: str) -> t.List[str]:
     """Split a path into segments and perform a sanity check.  If it detects
     '..' in the path it will raise a `TemplateNotFound` error.
     """
-    pass
+    pieces = []
+    for piece in template.split('/'):
+        if piece == '..':
+            raise TemplateNotFound(template)
+        elif piece and piece != '.':
+            pieces.append(piece)
+    return pieces
 
 class BaseLoader:
     """Baseclass for all loaders.  Subclass this and override `get_source` to
@@ -70,13 +76,13 @@ class BaseLoader:
         old state somewhere (for example in a closure).  If it returns `False`
         the template will be reloaded.
         """
-        pass
+        raise NotImplementedError()
 
     def list_templates(self) -> t.List[str]:
         """Iterates over all templates.  If the loader does not support that
         it should raise a :exc:`TypeError` which is the default behavior.
         """
-        pass
+        raise TypeError('this loader cannot iterate over all templates')
 
     @internalcode
     def load(self, environment: 'Environment', name: str, globals: t.Optional[t.MutableMapping[str, t.Any]]=None) -> 'Template':
@@ -86,7 +92,9 @@ class BaseLoader:
         loaders (such as :class:`PrefixLoader` or :class:`ChoiceLoader`)
         will not call this method but `get_source` directly.
         """
-        pass
+        source, filename, uptodate = self.get_source(environment, name)
+        code = environment.compile(source, name, filename)
+        return environment.template_class.from_code(environment, code, globals, uptodate)
 
 class FileSystemLoader(BaseLoader):
     """Load templates from a directory in the file system.
