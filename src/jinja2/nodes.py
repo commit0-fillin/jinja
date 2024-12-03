@@ -77,7 +77,7 @@ class Node(metaclass=NodeType):
             if len(fields) != len(self.fields):
                 if not self.fields:
                     raise TypeError(f'{type(self).__name__!r} takes 0 arguments')
-                raise TypeError(f'{type(self).__name__!r} takes 0 or {len(self.fields)} argument{('s' if len(self.fields) != 1 else '')}')
+                raise TypeError(f'{type(self).__name__!r} takes 0 or {len(self.fields)} argument{("s" if len(self.fields) != 1 else "")}')
             for name, arg in zip(self.fields, fields):
                 setattr(self, name, arg)
         for attr in self.attributes:
